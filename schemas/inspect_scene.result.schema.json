@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blender-mcp.local/schemas/inspect_scene.result.schema.json",
+  "title": "Blender MCP M0 inspect_scene result",
+  "allOf": [
+    {
+      "$ref": "common-result.schema.json"
+    },
+    {
+      "properties": {
+        "command": {
+          "const": "inspect_scene"
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "ok": {
+            "const": true
+          }
+        },
+        "required": ["ok"]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "scene_path",
+              "scene_name",
+              "objects",
+              "object_count",
+              "objects_returned",
+              "active_camera",
+              "frame",
+              "render"
+            ],
+            "properties": {
+              "scene_path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "scene_name": {
+                "type": "string"
+              },
+              "objects": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              },
+              "object_count": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "objects_returned": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "active_camera": {
+                "type": ["object", "null"]
+              },
+              "frame": {
+                "type": "object"
+              },
+              "render": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blender-mcp.local/schemas/inspect_scene.request.schema.json",
+  "title": "Blender MCP M0 inspect_scene request",
+  "allOf": [
+    {
+      "$ref": "common-request.schema.json"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "command": {
+          "const": "inspect_scene"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["scene_path"],
+          "properties": {
+            "scene_path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^/.+\\.blend$"
+            },
+            "include": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "summary",
+                  "objects",
+                  "collections",
+                  "cameras",
+                  "animations",
+                  "render"
+                ]
+              },
+              "default": ["summary"]
+            },
+            "max_objects": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000,
+              "default": 100
+            }
+          }
+        }
+      }
+    }
+  ]
+}

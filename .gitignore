@@ -1,0 +1,22 @@
+.DS_Store
+.venv/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+work/
+outputs/
+
+# Blender recovery and render output
+*.blend1
+*.blend2
+*.blend@
+previews/
+renders/
+
+# Local project state
+.blender-mcp/
+blender-mcp.toml

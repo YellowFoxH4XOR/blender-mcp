@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blender-mcp.local/schemas/render_preview.result.schema.json",
+  "title": "Blender MCP M0 render_preview result",
+  "allOf": [
+    {
+      "$ref": "common-result.schema.json"
+    },
+    {
+      "properties": {
+        "command": {
+          "const": "render_preview"
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "ok": {
+            "const": true
+          }
+        },
+        "required": ["ok"]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["scene_path", "source_sha256", "frame", "artifact"],
+            "properties": {
+              "scene_path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "frame": {
+                "type": "integer"
+              },
+              "artifact": {
+                "$ref": "common-result.schema.json#/$defs/artifact"
+              }
+            }
+          },
+          "artifacts": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "common-result.schema.json#/$defs/artifact"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blender-mcp.local/schemas/common-result.schema.json",
+  "title": "Blender MCP M0 result envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "request_id",
+    "command",
+    "ok",
+    "warnings",
+    "artifacts",
+    "timing"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 5,
+      "maxLength": 124,
+      "pattern": "^req_[A-Za-z0-9_-]{1,120}$"
+    },
+    "command": {
+      "enum": ["status", "inspect_scene", "render_preview"]
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "data": {
+      "type": "object"
+    },
+    "error": {
+      "$ref": "#/$defs/error"
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/artifact"
+      }
+    },
+    "timing": {
+      "$ref": "#/$defs/timing"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "ok": {
+            "const": true
+          }
+        },
+        "required": ["ok"]
+      },
+      "then": {
+        "required": ["data"],
+        "not": {
+          "required": ["error"]
+        }
+      },
+      "else": {
+        "required": ["error"],
+        "not": {
+          "required": ["data"]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "details"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{2,63}$"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "details": {
+          "type": "object"
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "path",
+        "media_type",
+        "size_bytes",
+        "sha256",
+        "width",
+        "height"
+      ],
+      "properties": {
+        "kind": {
+          "const": "preview"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "media_type": {
+          "const": "image/png"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^(sha256:)?[A-Fa-f0-9]{64}$"
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "timing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["execution_ms"],
+      "properties": {
+        "queue_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "blender_startup_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "execution_ms": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

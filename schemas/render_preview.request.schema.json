@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blender-mcp.local/schemas/render_preview.request.schema.json",
+  "title": "Blender MCP M0 render_preview request",
+  "allOf": [
+    {
+      "$ref": "common-request.schema.json"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "command": {
+          "const": "render_preview"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["scene_path"],
+          "properties": {
+            "scene_path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^/.+\\.blend$"
+            },
+            "frame": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000,
+              "default": 1
+            },
+            "max_width": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4096,
+              "default": 960
+            },
+            "max_height": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4096,
+              "default": 540
+            },
+            "samples": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4096,
+              "default": 16
+            },
+            "artifact_path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^/.+\\.png$"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

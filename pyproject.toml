@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dependable-blender-mcp"
+version = "0.1.0"
+description = "A constrained, headless Blender MCP server"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "mcp>=2,<3",
+  "pydantic>=2.12,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "jsonschema>=4.25,<5",
+  "pytest>=8.4,<10",
+  "pytest-cov>=6,<8",
+]
+
+[project.scripts]
+blender-mcp = "blender_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/blender_mcp", "blender_adapter"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]

@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blender-mcp.local/schemas/status.result.schema.json",
+  "title": "Blender MCP M0 status result",
+  "allOf": [
+    {
+      "$ref": "common-result.schema.json"
+    },
+    {
+      "properties": {
+        "command": {
+          "const": "status"
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "ok": {
+            "const": true
+          }
+        },
+        "required": ["ok"]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "blender_version",
+              "blender_version_tuple",
+              "background",
+              "adapter_schema_version",
+              "commands"
+            ],
+            "properties": {
+              "blender_version": {
+                "type": "string",
+                "minLength": 1
+              },
+              "blender_version_tuple": {
+                "type": "array",
+                "minItems": 3,
+                "items": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "background": {
+                "type": "boolean"
+              },
+              "adapter_schema_version": {
+                "const": "1.0"
+              },
+              "commands": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "enum": ["status", "inspect_scene", "render_preview"]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
