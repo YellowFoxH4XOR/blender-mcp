@@ -21,6 +21,7 @@ def test_from_env_uses_bundled_adapter_not_content_project(
     assert config.allow_overwrite is False
     assert config.state_db == tmp_path / ".blender-mcp" / "state.db"
     assert config.checkpoints_dir == tmp_path / ".blender-mcp" / "checkpoints"
+    assert config.http_port == 9876
 
 
 def test_load_reads_toml_and_applies_environment_overrides(

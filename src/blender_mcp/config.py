@@ -47,7 +47,7 @@ class BlenderMCPConfig(BaseModel):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     log_retention_days: int = Field(default=30, ge=1, le=3650)
     http_host: str = "127.0.0.1"
-    http_port: int = Field(default=8000, gt=0, le=65_535)
+    http_port: int = Field(default=9876, gt=0, le=65_535)
     http_token_file: Path | None = None
     remotion_project: Path | None = None
     node_executable: Path | None = None

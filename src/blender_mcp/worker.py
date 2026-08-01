@@ -167,10 +167,32 @@ def install_and_start_worker(
         shell=False,
     )
     if bootstrapped.returncode != 0:
-        raise ValueError(
-            "launchctl bootstrap failed: "
-            + (bootstrapped.stderr or bootstrapped.stdout or "unknown failure")[-2000:]
+        # Modern macOS can auto-register a plist placed in
+        # ~/Library/LaunchAgents while this installer is replacing it. That can
+        # race the explicit bootout/bootstrap cycle and return EIO even when the
+        # plist is valid. `load -w` is the compatible user-agent recovery path.
+        loaded = subprocess.run(
+            [str(launchctl_executable), "load", "-w", str(target)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            shell=False,
         )
+        if loaded.returncode != 0:
+            bootstrap_error = (
+                bootstrapped.stderr
+                or bootstrapped.stdout
+                or "unknown failure"
+            )[-2000:]
+            load_error = (
+                loaded.stderr or loaded.stdout or "unknown failure"
+            )[-2000:]
+            raise ValueError(
+                "launchctl bootstrap failed: "
+                f"{bootstrap_error}; launchctl load fallback failed: {load_error}"
+            )
     started = subprocess.run(
         [str(launchctl_executable), "kickstart", "-k", service],
         stdin=subprocess.DEVNULL,

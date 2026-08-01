@@ -261,9 +261,12 @@ def test_worker_install_command_builds_and_starts_launch_agent(
 ) -> None:
     repository = tmp_path / "repo"
     repository.mkdir()
-    python = tmp_path / "worker-python"
-    python.write_text("#!/bin/sh\nexit 0\n")
-    python.chmod(0o700)
+    base_python = tmp_path / "worker-python"
+    base_python.write_text("#!/bin/sh\nexit 0\n")
+    base_python.chmod(0o700)
+    python = repository / ".venv/bin/python"
+    python.parent.mkdir(parents=True)
+    python.symlink_to(base_python)
     config_path = tmp_path / "project/blender-mcp.toml"
     config_path.parent.mkdir()
     config_path.write_text(

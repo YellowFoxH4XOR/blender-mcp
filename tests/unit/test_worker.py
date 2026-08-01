@@ -157,3 +157,49 @@ def test_install_and_start_worker_bootstraps_launch_agent(
     assert calls[0] == f"bootout gui/{os.getuid()}/{spec.label}"
     assert calls[1] == f"bootstrap gui/{os.getuid()} {plist}"
     assert calls[2] == f"kickstart -k gui/{os.getuid()}/{spec.label}"
+
+
+def test_install_and_start_worker_falls_back_to_load_after_bootstrap_eio(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    log = tmp_path / "launchctl-calls"
+    launchctl = tmp_path / "launchctl"
+    launchctl.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$*\" >> '{log}'\n"
+        'if [ "$1" = "bootstrap" ]; then exit 5; fi\n'
+        "exit 0\n"
+    )
+    launchctl.chmod(0o700)
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    python = tmp_path / "python"
+    python.write_text("#!/bin/sh\nexit 0\n")
+    python.chmod(0o700)
+    config = tmp_path / "project/blender-mcp.toml"
+    config.parent.mkdir()
+    config.touch()
+    spec = WorkerSpec(
+        repository_root=repository,
+        python_executable=python,
+        config_path=config,
+        token_path=tmp_path / "secrets/worker-token",
+        log_path=tmp_path / "project/.blender-mcp/logs/worker.log",
+    )
+    plist = tmp_path / "Library/LaunchAgents/worker.plist"
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    installed = install_and_start_worker(
+        spec,
+        plist,
+        launchctl_executable=launchctl,
+    )
+
+    assert installed == plist
+    assert log.read_text().splitlines() == [
+        f"bootout gui/{os.getuid()}/{spec.label}",
+        f"bootstrap gui/{os.getuid()} {plist}",
+        f"load -w {plist}",
+        f"kickstart -k gui/{os.getuid()}/{spec.label}",
+    ]

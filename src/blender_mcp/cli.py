@@ -112,8 +112,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             remotion = config.remotion_project or repository / "remotion"
             spec = WorkerSpec(
                 repository_root=repository,
-                python_executable=args.python_executable.expanduser().resolve(
-                    strict=False
+                # Preserve a virtual environment's interpreter symlink. Resolving
+                # it turns `.venv/bin/python` into its base interpreter, which
+                # does not have this project's packages installed.
+                python_executable=Path(
+                    os.path.abspath(args.python_executable.expanduser())
                 ),
                 config_path=args.config.expanduser().resolve(strict=True),
                 token_path=Path(os.path.abspath(args.token_file.expanduser())),
