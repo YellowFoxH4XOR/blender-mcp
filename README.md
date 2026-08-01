@@ -123,13 +123,23 @@ args = [
 ]
 ```
 
-## Connect another MCP agent
+## Connect the Pi coding agent
 
-The worker is client-agnostic. Any agent that supports Streamable HTTP can use
-the same loopback endpoint; only the configuration key names vary by client.
+Pi does not provide a built-in MCP client. Use the
+[`pi-mcp-extension`](https://pi.dev/packages/pi-mcp-extension), which adds
+Streamable HTTP and STDIO MCP connections to Pi. The extension executes with
+Pi's permissions, so review its source, pin the version, and review upgrades
+before installing.
 
-1. Install and start the worker from a Terminal checkout. Run this once, or
-   rerun it after changing the project configuration:
+1. Install the extension in Pi. Pinning avoids silently changing the MCP client
+   underneath this integration:
+
+   ```bash
+   pi install npm:pi-mcp-extension@1.5.0
+   ```
+
+2. Install and start the Blender worker from a Terminal checkout. Run this once,
+   or rerun it after changing the Blender project configuration:
 
    ```bash
    uv run blender-mcp worker install \
@@ -138,53 +148,83 @@ the same loopback endpoint; only the configuration key names vary by client.
      --python-executable /absolute/path/to/venv/bin/python
    ```
 
-   The command prints the token-file location and MCP URL. Confirm the worker
-   is healthy before configuring the agent:
+   Confirm that the worker and Blender runtime are healthy before configuring Pi:
 
    ```bash
    uv run blender-mcp doctor \
      --config /absolute/path/to/blender-project/blender-mcp.toml
    ```
 
-2. Add a remote MCP server named `blender` to the other agent. Use its
-   equivalent of this configuration:
+   `worker install` prints the token-file location and MCP URL. Unless you
+   selected another path, the token is in
+   `~/.config/blender-mcp/worker-token`.
+
+3. Add the `blender` server to Pi's private MCP config at
+   `~/.pi/agent/mcp.json` (global) or `.pi/mcp.json` (project-only). Merge this
+   server into an existing `mcpServers` object; do not replace unrelated servers:
 
    ```json
    {
+     "settings": {
+       "requestTimeoutMs": 300000,
+       "maxRetries": 5
+     },
      "mcpServers": {
        "blender": {
+         "transport": "streamable-http",
          "url": "http://127.0.0.1:9876/mcp",
          "headers": {
            "Authorization": "Bearer REPLACE_WITH_PRIVATE_TOKEN"
-         }
+         },
+         "lifecycle": "eager",
+         "requestTimeoutMs": 300000,
+         "healthCheckIntervalMs": 30000
        }
      }
    }
    ```
 
-   Some clients call `headers` `http_headers` or support a
-   `bearer_token_env_var` instead. Use the client’s secret-store or environment
-   variable support where available; do not hard-code the real token in a
-   repository, prompt, or shared config file.
-
-3. Read the token only when configuring the agent. The file is owner-only and
-   should remain at `~/.config/blender-mcp/worker-token` unless you selected a
-   different path:
+   Replace only `REPLACE_WITH_PRIVATE_TOKEN` with the contents of the
+   owner-only worker token file. The extension treats `headers` as literal
+   values and does not expand `${VARIABLE}` references. Keep this file private:
 
    ```bash
-   read -r BLENDER_MCP_HTTP_TOKEN < ~/.config/blender-mcp/worker-token
-   # Paste/use $BLENDER_MCP_HTTP_TOKEN in the agent's private secret store.
-   unset BLENDER_MCP_HTTP_TOKEN
+   chmod 700 ~/.pi ~/.pi/agent
+   chmod 600 ~/.pi/agent/mcp.json
    ```
 
-4. Restart or reload the other agent, then verify that it can list the Blender
-   tools. A healthy connection exposes scene inspection, allowlisted
-   transactions, validation, previews, and durable renders; it does not expose
-   arbitrary Python or shell execution.
+   Never commit `.pi/mcp.json` if it contains the bearer token. Prefer the
+   global file when possible, or add the project file to `.gitignore`.
 
-If the agent supports only STDIO, configure the `command`/`args` example above
-and point it at the same project configuration. On macOS, prefer the HTTP
-worker for agents running inside a sandboxed desktop application.
+4. Start Pi from the project checkout and verify the connection:
+
+   ```bash
+   cd /Users/akki/Desktop/github/blender-mcp
+   pi
+   ```
+
+   In Pi, run `/mcp` and confirm that `blender` is `ready`. If it is lazy or
+   disconnected, run `/mcp:start blender`; `/mcp blender` shows its connection
+   error and recent stderr. The discovered tools use names such as
+   `mcp_blender_get_blender_status` and `mcp_blender_inspect_scene`.
+
+   Start with a read-only smoke test: ask Pi to call the status and scene
+   inspection tools. Only after that succeeds should you try an allowlisted
+   transaction or a render. The worker exposes no arbitrary Python or shell
+   execution.
+
+Troubleshooting:
+
+- `connection refused`: check the `doctor` result and whether the macOS
+  LaunchAgent installed by `worker install` is running.
+- `401 Unauthorized`: reread the token from the worker's token file and update
+  the Pi config; do not generate or paste a different token.
+- No `mcp_blender_*` tools: restart Pi after changing `mcp.json`, then run
+  `/mcp` and `/mcp:start blender`.
+
+Pi can also launch a STDIO server, but on macOS the authenticated HTTP worker is
+the dependable path for a desktop agent because Blender stays outside Pi's
+process sandbox.
 
 ## MCP tools
 
