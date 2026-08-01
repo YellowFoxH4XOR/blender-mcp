@@ -123,6 +123,69 @@ args = [
 ]
 ```
 
+## Connect another MCP agent
+
+The worker is client-agnostic. Any agent that supports Streamable HTTP can use
+the same loopback endpoint; only the configuration key names vary by client.
+
+1. Install and start the worker from a Terminal checkout. Run this once, or
+   rerun it after changing the project configuration:
+
+   ```bash
+   uv run blender-mcp worker install \
+     --config /absolute/path/to/blender-project/blender-mcp.toml \
+     --repository-root /Users/akki/Desktop/github/blender-mcp \
+     --python-executable /absolute/path/to/venv/bin/python
+   ```
+
+   The command prints the token-file location and MCP URL. Confirm the worker
+   is healthy before configuring the agent:
+
+   ```bash
+   uv run blender-mcp doctor \
+     --config /absolute/path/to/blender-project/blender-mcp.toml
+   ```
+
+2. Add a remote MCP server named `blender` to the other agent. Use its
+   equivalent of this configuration:
+
+   ```json
+   {
+     "mcpServers": {
+       "blender": {
+         "url": "http://127.0.0.1:9876/mcp",
+         "headers": {
+           "Authorization": "Bearer REPLACE_WITH_PRIVATE_TOKEN"
+         }
+       }
+     }
+   }
+   ```
+
+   Some clients call `headers` `http_headers` or support a
+   `bearer_token_env_var` instead. Use the client’s secret-store or environment
+   variable support where available; do not hard-code the real token in a
+   repository, prompt, or shared config file.
+
+3. Read the token only when configuring the agent. The file is owner-only and
+   should remain at `~/.config/blender-mcp/worker-token` unless you selected a
+   different path:
+
+   ```bash
+   read -r BLENDER_MCP_HTTP_TOKEN < ~/.config/blender-mcp/worker-token
+   # Paste/use $BLENDER_MCP_HTTP_TOKEN in the agent's private secret store.
+   unset BLENDER_MCP_HTTP_TOKEN
+   ```
+
+4. Restart or reload the other agent, then verify that it can list the Blender
+   tools. A healthy connection exposes scene inspection, allowlisted
+   transactions, validation, previews, and durable renders; it does not expose
+   arbitrary Python or shell execution.
+
+If the agent supports only STDIO, configure the `command`/`args` example above
+and point it at the same project configuration. On macOS, prefer the HTTP
+worker for agents running inside a sandboxed desktop application.
+
 ## MCP tools
 
 - `get_blender_status`
