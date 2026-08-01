@@ -260,6 +260,8 @@ def _compositor_file_output_nodes() -> list[str]:
     for scene in bpy.data.scenes:
         node_tree = getattr(scene, "node_tree", None)
         if node_tree is None:
+            node_tree = getattr(scene, "compositing_node_group", None)
+        if node_tree is None:
             continue
         pending: list[tuple[Any, str]] = [(node_tree, scene.name)]
         visited: set[int] = set()

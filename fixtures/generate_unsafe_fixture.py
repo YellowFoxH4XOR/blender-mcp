@@ -30,9 +30,18 @@ def main() -> None:
     image.filepath = str(external / "outside.png")
 
     scene.use_nodes = True
-    output_node = scene.node_tree.nodes.new("CompositorNodeOutputFile")
+    node_tree = getattr(scene, "node_tree", None)
+    if node_tree is None:
+        node_tree = bpy.data.node_groups.new(
+            "UnsafeCompositor",
+            "CompositorNodeTree",
+        )
+        scene.compositing_node_group = node_tree
+    output_node = node_tree.nodes.new("CompositorNodeOutputFile")
     output_node.name = "UnsafeFileOutput"
-    output_node.base_path = str(external)
+    image_node = node_tree.nodes.new("CompositorNodeImage")
+    image_node.name = "UnsafeExternalImage"
+    image_node.image = image
 
     bpy.ops.wm.save_as_mainfile(filepath=str(output), check_existing=False)
 
