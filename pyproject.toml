@@ -6,6 +6,8 @@ build-backend = "hatchling.build"
 name = "dependable-blender-mcp"
 version = "0.1.0"
 description = "A constrained, headless Blender MCP server"
+license = "Apache-2.0"
+readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
   "mcp>=2,<3",
@@ -20,10 +22,18 @@ dev = [
 ]
 
 [project.scripts]
-blender-mcp = "blender_mcp.server:main"
+blender-mcp = "blender_mcp.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/blender_mcp", "blender_adapter"]
+
+[tool.hatch.build.targets.wheel.force-include]
+schemas = "blender_mcp/schemas"
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+  "/remotion/node_modules",
+]
 
 [tool.pytest.ini_options]
 addopts = "-q"

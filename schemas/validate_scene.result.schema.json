@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blender-mcp.local/schemas/validate_scene.result.schema.json",
+  "title": "Blender MCP validate_scene result",
+  "allOf": [
+    {"$ref": "common-result.schema.json"},
+    {"properties": {"command": {"const": "validate_scene"}}},
+    {
+      "if": {
+        "properties": {"ok": {"const": true}},
+        "required": ["ok"]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "scene_path",
+              "revision",
+              "ready_for_render",
+              "summary",
+              "findings"
+            ],
+            "properties": {
+              "scene_path": {"type": "string", "minLength": 1},
+              "revision": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "ready_for_render": {"type": "boolean"},
+              "summary": {"type": "object"},
+              "findings": {"type": "array", "items": {"type": "object"}}
+            }
+          }
+        }
+      }
+    }
+  ]
+}

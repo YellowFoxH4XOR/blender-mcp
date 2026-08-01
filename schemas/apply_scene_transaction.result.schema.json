@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blender-mcp.local/schemas/apply_scene_transaction.result.schema.json",
+  "title": "Blender MCP apply_scene_transaction result",
+  "allOf": [
+    {"$ref": "common-result.schema.json"},
+    {"properties": {"command": {"const": "apply_scene_transaction"}}},
+    {
+      "if": {
+        "properties": {"ok": {"const": true}},
+        "required": ["ok"]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "transaction_id",
+              "scene_path",
+              "source_sha256",
+              "output_path",
+              "output_sha256",
+              "applied_operations"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

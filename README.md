@@ -5,13 +5,13 @@ automation.
 
 ## Status
 
-This repository is under active development. The first milestone is deliberately
-small:
+The macOS headless workflow is implemented end to end:
 
-1. discover and verify Blender;
-2. inspect a `.blend` scene through a versioned JSON contract;
-3. render a preview still without mutating the source scene; and
-4. expose those capabilities as typed MCP tools.
+`approved template -> inspect -> atomic transaction -> validate -> preview ->`
+`durable render job -> Blender PNG sequence -> Remotion MP4 -> manifest`
+
+The repository is not yet a cross-platform V1 release candidate. The optional
+live Blender add-on and Windows/Linux certification remain separate milestones.
 
 The project does **not** accept arbitrary Python or shell commands from MCP
 clients.
@@ -34,7 +34,7 @@ clients.
 - MCP Python SDK 2.x
 
 Additional platforms and an interactive Blender add-on are intentionally
-deferred until the headless path is reliable.
+deferred until the headless path completes release hardening.
 
 ## Repository layout
 
@@ -45,6 +45,7 @@ schemas/            versioned JSON contracts
 fixtures/           reproducible Blender fixtures
 tests/              unit, security, integration, and end-to-end tests
 docs/               contracts and architecture notes
+remotion/            pinned frame-sequence-to-MP4 renderer
 ```
 
 ## Setup
@@ -52,15 +53,22 @@ docs/               contracts and architecture notes
 ```bash
 cd /Users/akki/Desktop/github/blender-mcp
 uv sync --python 3.12 --extra dev
+cd remotion
+npm ci
+npx remotion browser ensure
+cd ..
+uv run blender-mcp init /absolute/path/to/blender-project
+uv run blender-mcp doctor --config /absolute/path/to/blender-project/blender-mcp.toml
+uv run blender-mcp worker install \
+  --config /absolute/path/to/blender-project/blender-mcp.toml
 ```
 
 Choose a project root containing the `.blend` files and preview outputs that
 the server is allowed to access:
 
 ```bash
-export BLENDER_MCP_PROJECT_ROOT=/absolute/path/to/blender-project
-export BLENDER_MCP_BLENDER_EXECUTABLE=/Applications/Blender.app/Contents/MacOS/Blender
-uv run blender-mcp
+uv run blender-mcp serve \
+  --config /absolute/path/to/blender-project/blender-mcp.toml
 ```
 
 The project root is a security boundary. MCP paths must be relative to it;
@@ -69,36 +77,206 @@ rejected.
 
 ## Codex configuration
 
+On macOS, the dependable Codex setup is an authenticated loopback worker
+managed by `launchd`. Do not make Codex launch Blender as its own child process:
+the Codex application sandbox can terminate an otherwise valid Blender
+installation before Blender initializes. The worker keeps Blender outside that
+sandbox while exposing only the constrained MCP tools on `127.0.0.1`.
+
+The installed worker must use:
+
+- a dedicated Python 3.12 virtual environment;
+- an absolute Blender executable in `blender-mcp.toml`;
+- an absolute Node executable and Remotion project;
+- a private bearer-token file (`0600`);
+- the `streamable-http` transport bound to loopback only.
+
+`worker install` validates the complete offline runtime, creates an owner-only
+bearer-token file, writes the user LaunchAgent, and starts it with `launchctl`.
+It prints the token-file location and MCP URL. The command is macOS-only and
+must be run from a Terminal checkout so Blender and Remotion remain outside the
+Codex application sandbox.
+
+The resulting Codex entry is:
+
 ```toml
 [mcp_servers.blender]
-command = "/opt/homebrew/bin/uv"
-args = [
-  "run",
-  "--project",
-  "/Users/akki/Desktop/github/blender-mcp",
-  "blender-mcp",
-]
-cwd = "/Users/akki/Desktop/github/blender-mcp"
-startup_timeout_sec = 20
-tool_timeout_sec = 300
+url = "http://127.0.0.1:9876/mcp"
+http_headers = { "Authorization" = "Bearer REPLACE_WITH_PRIVATE_TOKEN" }
+startup_timeout_sec = 30
+tool_timeout_sec = 21600
 default_tools_approval_mode = "writes"
 required = false
-
-[mcp_servers.blender.env]
-BLENDER_MCP_PROJECT_ROOT = "/absolute/path/to/blender-project"
-BLENDER_MCP_BLENDER_EXECUTABLE = "/Applications/Blender.app/Contents/MacOS/Blender"
 ```
 
-Restart Codex after changing MCP configuration.
+Keep `~/.codex/config.toml` private (`chmod 600`) because this form contains the
+token. Restart Codex after changing MCP configuration. STDIO remains supported
+for Terminal and clients that can safely spawn Blender:
 
-## M0 tools
+```toml
+[mcp_servers.blender]
+command = "/absolute/path/to/venv/bin/blender-mcp"
+args = [
+  "serve",
+  "--config",
+  "/absolute/path/to/blender-project/blender-mcp.toml",
+]
+```
+
+## Connect the Pi coding agent
+
+Pi does not provide a built-in MCP client. Use the
+[`pi-mcp-extension`](https://pi.dev/packages/pi-mcp-extension), which adds
+Streamable HTTP and STDIO MCP connections to Pi. The extension executes with
+Pi's permissions, so review its source, pin the version, and review upgrades
+before installing.
+
+1. Install the extension in Pi. Pinning avoids silently changing the MCP client
+   underneath this integration:
+
+   ```bash
+   pi install npm:pi-mcp-extension@1.5.0
+   ```
+
+2. Install and start the Blender worker from a Terminal checkout. Run this once,
+   or rerun it after changing the Blender project configuration:
+
+   ```bash
+   uv run blender-mcp worker install \
+     --config /absolute/path/to/blender-project/blender-mcp.toml \
+     --repository-root /Users/akki/Desktop/github/blender-mcp \
+     --python-executable /absolute/path/to/venv/bin/python
+   ```
+
+   Confirm that the worker and Blender runtime are healthy before configuring Pi:
+
+   ```bash
+   uv run blender-mcp doctor \
+     --config /absolute/path/to/blender-project/blender-mcp.toml
+   ```
+
+   `worker install` prints the token-file location and MCP URL. Unless you
+   selected another path, the token is in
+   `~/.config/blender-mcp/worker-token`.
+
+3. Add the `blender` server to Pi's private MCP config at
+   `~/.pi/agent/mcp.json` (global) or `.pi/mcp.json` (project-only). Merge this
+   server into an existing `mcpServers` object; do not replace unrelated servers:
+
+   ```json
+   {
+     "settings": {
+       "requestTimeoutMs": 300000,
+       "maxRetries": 5
+     },
+     "mcpServers": {
+       "blender": {
+         "transport": "streamable-http",
+         "url": "http://127.0.0.1:9876/mcp",
+         "headers": {
+           "Authorization": "Bearer REPLACE_WITH_PRIVATE_TOKEN"
+         },
+         "lifecycle": "eager",
+         "requestTimeoutMs": 300000,
+         "healthCheckIntervalMs": 30000
+       }
+     }
+   }
+   ```
+
+   Replace only `REPLACE_WITH_PRIVATE_TOKEN` with the contents of the
+   owner-only worker token file. The extension treats `headers` as literal
+   values and does not expand `${VARIABLE}` references. Keep this file private:
+
+   ```bash
+   chmod 700 ~/.pi ~/.pi/agent
+   chmod 600 ~/.pi/agent/mcp.json
+   ```
+
+   Never commit `.pi/mcp.json` if it contains the bearer token. Prefer the
+   global file when possible, or add the project file to `.gitignore`.
+
+4. Start Pi from the project checkout and verify the connection:
+
+   ```bash
+   cd /Users/akki/Desktop/github/blender-mcp
+   pi
+   ```
+
+   In Pi, run `/mcp` and confirm that `blender` is `ready`. If it is lazy or
+   disconnected, run `/mcp:start blender`; `/mcp blender` shows its connection
+   error and recent stderr. The discovered tools use names such as
+   `mcp_blender_get_blender_status` and `mcp_blender_inspect_scene`.
+
+   Start with a read-only smoke test: ask Pi to call the status and scene
+   inspection tools. Only after that succeeds should you try an allowlisted
+   transaction or a render. The worker exposes no arbitrary Python or shell
+   execution.
+
+Troubleshooting:
+
+- `connection refused`: check the `doctor` result and whether the macOS
+  LaunchAgent installed by `worker install` is running.
+- `401 Unauthorized`: reread the token from the worker's token file and update
+  the Pi config; do not generate or paste a different token.
+- No `mcp_blender_*` tools: restart Pi after changing `mcp.json`, then run
+  `/mcp` and `/mcp:start blender`.
+
+Pi can also launch a STDIO server, but on macOS the authenticated HTTP worker is
+the dependable path for a desktop agent because Blender stays outside Pi's
+process sandbox.
+
+## MCP tools
 
 - `get_blender_status`
 - `inspect_scene`
+- `list_project_assets`
+- `validate_scene`
+- `create_scene_from_template`
+- `apply_scene_transaction`
 - `render_preview`
+- `start_render`
+- `get_job`
+- `cancel_job`
+- `save_scene_as`
+- `restore_checkpoint`
 
 The server deliberately has no arbitrary Python, shell, add-on installation,
 URL download, or external-asset tool.
+
+## Approved assets
+
+Character rigs, actions, materials, models, and templates must be declared in
+`assets/catalog.toml` inside the configured project root:
+
+```toml
+schema_version = "1"
+
+[[templates]]
+id = "character-stage-v1"
+path = "templates/character-stage.blend"
+version = "1.0.0"
+license = "CC0-1.0"
+
+[[actions]]
+id = "wave-v1"
+path = "assets/actions/wave.blend"
+version = "1.0.0"
+license = "CC0-1.0"
+```
+
+The AI client never submits Python. It inspects the selected scene revision and
+submits an allowlisted operation list such as `set_transform`,
+`set_visibility`, `configure_scene`, or `apply_action`.
+
+## Render pipeline
+
+`start_render` returns immediately with a durable job ID. Poll with `get_job`
+or stop with `cancel_job`. Blender renders a deterministic PNG sequence; the
+pinned Remotion composition consumes the frame manifest and produces the final
+MP4. Both the MP4 and its JSON artifact manifest contain verified SHA-256
+metadata. Interrupted jobs are recovered as `orphaned`; automatic partial-frame
+resume is still release-candidate work.
 
 ## Verification
 
@@ -114,11 +292,30 @@ Run the real Blender integration suite:
 uv run pytest tests/integration/test_blender_adapter.py -q
 ```
 
-On the reference macOS machine, Blender 5.2 can crash during native startup
-when launched inside the Codex application sandbox. The identical test passes
-when run through an approved unsandboxed Blender process or directly from
-Terminal. The launcher classifies an early segmentation fault as
-`BLENDER_CRASHED`; it is not reported as an adapter validation failure.
+Run the actual Blender-to-Remotion MP4 workflow:
+
+```bash
+uv run pytest tests/e2e/test_blender_to_remotion.py -q
+```
+
+On the reference macOS machine, Blender 5.2 and Remotion's Chrome process can
+be blocked during native startup inside the Codex application sandbox. The
+same signed and notarized Blender installation passes from the external
+loopback worker or Terminal. Reinstalling Blender does not fix this sandbox
+boundary.
+
+Verify the external worker through the real MCP transport:
+
+```bash
+/absolute/path/to/worker-venv/bin/python \
+  scripts/verify_external_worker.py \
+  --token-file /absolute/path/to/private-token
+```
+
+This creates a catalog-approved scene, applies a revision-checked transaction,
+validates it, renders a preview, runs the durable Blender-to-Remotion job, and
+fails unless the final state is `succeeded`.
 
 See [the frozen M0 contract](docs/M0_CONTRACT.md) for the exact boundaries,
-schemas, errors, and deferred capabilities.
+and [the headless V1 workflow](docs/HEADLESS_V1.md) for the implemented
+transaction and render architecture.

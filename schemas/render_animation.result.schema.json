@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blender-mcp.local/schemas/render_animation.result.schema.json",
+  "title": "Blender MCP render_animation result",
+  "allOf": [
+    {"$ref": "common-result.schema.json"},
+    {"properties": {"command": {"const": "render_animation"}}},
+    {
+      "if": {
+        "properties": {"ok": {"const": true}},
+        "required": ["ok"]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "scene_path",
+              "source_sha256",
+              "frame_start",
+              "frame_end",
+              "artifact"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blender-mcp.local/schemas/render_animation.request.schema.json",
+  "title": "Blender MCP render_animation request",
+  "allOf": [
+    {"$ref": "common-request.schema.json"},
+    {
+      "type": "object",
+      "properties": {
+        "command": {"const": "render_animation"},
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["scene_path", "artifact_path"],
+          "properties": {
+            "scene_path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^/.+\\.blend$"
+            },
+            "artifact_path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^/.+\\.json$"
+            },
+            "frame_start": {"type": "integer", "minimum": 0},
+            "frame_end": {"type": "integer", "minimum": 0},
+            "max_width": {
+              "type": "integer",
+              "minimum": 16,
+              "maximum": 4096
+            },
+            "max_height": {
+              "type": "integer",
+              "minimum": 16,
+              "maximum": 4096
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 import time
@@ -25,9 +26,28 @@ from typing import Any
 
 import bpy
 
+_ADAPTER_DIRECTORY = Path(__file__).resolve().parent
+if str(_ADAPTER_DIRECTORY) not in sys.path:
+    sys.path.insert(0, str(_ADAPTER_DIRECTORY))
+from operations import (
+    ExternalFileReference,
+    OperationExecutionError,
+    apply_operations,
+    find_scene_security_violations,
+)
+
 
 SCHEMA_VERSION = "1.0"
-ALLOWED_COMMANDS = frozenset({"status", "inspect_scene", "render_preview"})
+ALLOWED_COMMANDS = frozenset(
+    {
+        "status",
+        "apply_scene_transaction",
+        "inspect_scene",
+        "validate_scene",
+        "render_preview",
+        "render_animation",
+    }
+)
 REQUEST_ID_PATTERN = re.compile(r"^req_[A-Za-z0-9_-]{1,120}$")
 MAX_OBJECTS_LIMIT = 1_000
 DEFAULT_MAX_OBJECTS = 100
@@ -170,6 +190,127 @@ def _open_scene(path: Path) -> None:
         raise AdapterError("SCENE_OPEN_FAILED", "Blender could not open the scene.") from exc
 
 
+def _project_root(payload: dict[str, Any], scene_path: Path) -> Path:
+    raw = payload.get("project_root")
+    if raw is None:
+        # Direct adapter callers from older protocol clients are confined to the
+        # scene directory. The launcher always supplies the wider project root.
+        return scene_path.parent.resolve(strict=True)
+    if not isinstance(raw, str) or not Path(raw).is_absolute():
+        raise AdapterError(
+            "INVALID_PROJECT_ROOT",
+            "project_root must be an absolute directory.",
+        )
+    try:
+        root = Path(raw).resolve(strict=True)
+    except OSError as exc:
+        raise AdapterError(
+            "INVALID_PROJECT_ROOT",
+            "project_root does not exist.",
+        ) from exc
+    if not root.is_dir() or not scene_path.is_relative_to(root):
+        raise AdapterError(
+            "PATH_OUTSIDE_PROJECT",
+            "scene_path must resolve inside project_root.",
+        )
+    return root
+
+
+def _is_packed(value: Any) -> bool:
+    if getattr(value, "packed_file", None) is not None:
+        return True
+    packed_files = getattr(value, "packed_files", None)
+    if packed_files is None:
+        return False
+    try:
+        return len(packed_files) > 0
+    except (TypeError, AttributeError):
+        return False
+
+
+def _external_file_references() -> list[ExternalFileReference]:
+    references: list[ExternalFileReference] = []
+    collections = (
+        ("cache_file", "cache_files"),
+        ("font", "fonts"),
+        ("image", "images"),
+        ("library", "libraries"),
+        ("movie_clip", "movieclips"),
+        ("sound", "sounds"),
+        ("volume", "volumes"),
+    )
+    for kind, collection_name in collections:
+        for value in getattr(bpy.data, collection_name, ()):
+            raw = getattr(value, "filepath", "")
+            if not isinstance(raw, str):
+                continue
+            references.append(
+                ExternalFileReference(
+                    kind=kind,
+                    name=str(getattr(value, "name_full", getattr(value, "name", ""))),
+                    path=raw,
+                    packed=_is_packed(value),
+                )
+            )
+    return references
+
+
+def _compositor_file_output_nodes() -> list[str]:
+    outputs: list[str] = []
+    for scene in bpy.data.scenes:
+        node_tree = getattr(scene, "node_tree", None)
+        if node_tree is None:
+            node_tree = getattr(scene, "compositing_node_group", None)
+        if node_tree is None:
+            continue
+        pending: list[tuple[Any, str]] = [(node_tree, scene.name)]
+        visited: set[int] = set()
+        while pending:
+            tree, prefix = pending.pop()
+            marker = id(tree)
+            if marker in visited:
+                continue
+            visited.add(marker)
+            for node in getattr(tree, "nodes", ()):
+                node_name = str(getattr(node, "name", "unnamed"))
+                qualified = f"{prefix}/{node_name}"
+                if (
+                    getattr(node, "type", None) == "OUTPUT_FILE"
+                    or getattr(node, "bl_idname", None)
+                    == "CompositorNodeOutputFile"
+                ):
+                    outputs.append(qualified)
+                nested = getattr(node, "node_tree", None)
+                if nested is not None:
+                    pending.append((nested, qualified))
+    return sorted(outputs)
+
+
+def _scene_security_findings(
+    payload: dict[str, Any],
+    scene_path: Path,
+) -> list[dict[str, Any]]:
+    return find_scene_security_violations(
+        scene_path=scene_path,
+        project_root=_project_root(payload, scene_path),
+        file_references=_external_file_references(),
+        compositor_file_outputs=_compositor_file_output_nodes(),
+    )
+
+
+def _enforce_scene_security(
+    payload: dict[str, Any],
+    scene_path: Path,
+) -> None:
+    findings = _scene_security_findings(payload, scene_path)
+    if findings:
+        raise AdapterError(
+            "SCENE_SECURITY_BLOCKED",
+            "Scene contains external file access that is not allowed.",
+            {"findings": findings},
+        )
+
+
 def _json_number_tuple(value: Any) -> list[float]:
     return [round(float(component), 8) for component in value]
 
@@ -268,7 +409,11 @@ def _status(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any
 
 
 def _inspect(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
-    _strict_payload(payload, {"scene_path", "include", "max_objects"}, {"scene_path"})
+    _strict_payload(
+        payload,
+        {"scene_path", "project_root", "include", "max_objects"},
+        {"scene_path"},
+    )
     include = payload.get("include")
     if include is not None and (
         not isinstance(include, list) or not all(isinstance(item, str) for item in include)
@@ -288,6 +433,113 @@ def _inspect(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, An
     _open_scene(path)
     data, warnings = _scene_summary(path, max_objects)
     return data, [], warnings
+
+
+def _validation_finding(
+    code: str,
+    severity: str,
+    message: str,
+    **details: Any,
+) -> dict[str, Any]:
+    return {
+        "code": code,
+        "severity": severity,
+        "message": message,
+        "details": details,
+    }
+
+
+def _validate_scene(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
+    _strict_payload(payload, {"scene_path", "project_root"}, {"scene_path"})
+    scene_path = _scene_path(payload)
+    _project_root(payload, scene_path)
+    _open_scene(scene_path)
+    scene = bpy.context.scene
+    render = scene.render
+    findings: list[dict[str, Any]] = []
+    findings.extend(_scene_security_findings(payload, scene_path))
+
+    if scene.camera is None:
+        findings.append(
+            _validation_finding(
+                "CAMERA_REQUIRED",
+                "blocker",
+                "Scene has no active camera.",
+            )
+        )
+    if scene.frame_end < scene.frame_start:
+        findings.append(
+            _validation_finding(
+                "INVALID_FRAME_RANGE",
+                "blocker",
+                "Scene frame end is before frame start.",
+                frame_start=scene.frame_start,
+                frame_end=scene.frame_end,
+            )
+        )
+    if render.fps <= 0 or render.fps_base <= 0:
+        findings.append(
+            _validation_finding(
+                "INVALID_FPS",
+                "blocker",
+                "Scene FPS must be positive.",
+                fps=render.fps,
+                fps_base=render.fps_base,
+            )
+        )
+    if render.resolution_x <= 0 or render.resolution_y <= 0:
+        findings.append(
+            _validation_finding(
+                "INVALID_RESOLUTION",
+                "blocker",
+                "Render resolution must be positive.",
+                width=render.resolution_x,
+                height=render.resolution_y,
+            )
+        )
+
+    stable_ids: dict[str, str] = {}
+    for obj in sorted(scene.objects, key=lambda item: item.name_full):
+        value = obj.get("_blender_mcp_id")
+        if not isinstance(value, str) or not value.strip():
+            continue
+        stable_id = value.strip()
+        if stable_id in stable_ids:
+            findings.append(
+                _validation_finding(
+                    "DUPLICATE_STABLE_ID",
+                    "blocker",
+                    "Multiple objects use the same stable Blender MCP identifier.",
+                    object_id=stable_id,
+                    first_object=stable_ids[stable_id],
+                    duplicate_object=obj.name_full,
+                )
+            )
+        else:
+            stable_ids[stable_id] = obj.name_full
+
+    blockers = sum(item["severity"] == "blocker" for item in findings)
+    errors = sum(item["severity"] == "error" for item in findings)
+    return (
+        {
+            "scene_path": str(scene_path),
+            "revision": f"sha256:{_file_sha256(scene_path)}",
+            "ready_for_render": blockers == 0 and errors == 0,
+            "summary": {
+                "blockers": blockers,
+                "errors": errors,
+                "warnings": sum(
+                    item["severity"] == "warning" for item in findings
+                ),
+                "info": sum(item["severity"] == "info" for item in findings),
+            },
+            "findings": findings,
+        },
+        [],
+        [],
+    )
 
 
 def _preview_dimensions(scene: Any, max_width: int, max_height: int) -> tuple[int, int]:
@@ -315,12 +567,22 @@ def _render_preview(
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
     _strict_payload(
         payload,
-        {"scene_path", "frame", "max_width", "max_height", "samples", "artifact_path"},
+        {
+            "scene_path",
+            "project_root",
+            "frame",
+            "max_width",
+            "max_height",
+            "samples",
+            "artifact_path",
+        },
         {"scene_path"},
     )
     scene_path = _scene_path(payload)
+    _project_root(payload, scene_path)
     source_hash_before = _file_sha256(scene_path)
     _open_scene(scene_path)
+    _enforce_scene_security(payload, scene_path)
     scene = bpy.context.scene
     if scene.camera is None:
         raise AdapterError("CAMERA_REQUIRED", "Scene has no active camera.")
@@ -393,6 +655,301 @@ def _render_preview(
     )
 
 
+def _render_animation(
+    payload: dict[str, Any], result_path: Path
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
+    _strict_payload(
+        payload,
+        {
+            "scene_path",
+            "project_root",
+            "artifact_path",
+            "frame_start",
+            "frame_end",
+            "max_width",
+            "max_height",
+        },
+        {"scene_path", "artifact_path"},
+    )
+    scene_path = _scene_path(payload)
+    _project_root(payload, scene_path)
+    source_hash_before = _file_sha256(scene_path)
+    _open_scene(scene_path)
+    _enforce_scene_security(payload, scene_path)
+    scene = bpy.context.scene
+    if scene.camera is None:
+        raise AdapterError("CAMERA_REQUIRED", "Scene has no active camera.")
+
+    frame_start = _integer(
+        payload,
+        "frame_start",
+        scene.frame_start,
+        0,
+        1_000_000,
+    )
+    frame_end = _integer(
+        payload,
+        "frame_end",
+        scene.frame_end,
+        frame_start,
+        1_000_000,
+    )
+    max_width = _integer(payload, "max_width", 1920, 16, MAX_PREVIEW_DIMENSION)
+    max_height = _integer(payload, "max_height", 1080, 16, MAX_PREVIEW_DIMENSION)
+    artifact_raw = payload.get("artifact_path")
+    if not isinstance(artifact_raw, str) or not Path(artifact_raw).is_absolute():
+        raise AdapterError("INVALID_ARTIFACT_PATH", "artifact_path must be absolute.")
+    artifact_path = Path(artifact_raw).resolve()
+    if artifact_path.suffix.lower() != ".json":
+        raise AdapterError(
+            "INVALID_ARTIFACT_PATH",
+            "Animation frame-sequence manifest must use a .json suffix.",
+        )
+    if not artifact_path.parent.is_dir():
+        raise AdapterError("INVALID_ARTIFACT_PATH", "Render artifact directory does not exist.")
+    sequence_path = artifact_path.with_suffix("")
+    if artifact_path.exists() or sequence_path.exists():
+        raise AdapterError(
+            "ARTIFACT_EXISTS",
+            "Animation artifact already exists.",
+        )
+
+    width, height = _preview_dimensions(scene, max_width, max_height)
+    scene.frame_start = frame_start
+    scene.frame_end = frame_end
+    scene.render.resolution_x = width
+    scene.render.resolution_y = height
+    scene.render.resolution_percentage = 100
+    scene.render.image_settings.file_format = "PNG"
+    scene.render.image_settings.color_mode = "RGBA"
+    scene.render.use_file_extension = True
+
+    temporary_path = Path(
+        tempfile.mkdtemp(
+            prefix=f".{sequence_path.name}.",
+            suffix=".tmp",
+            dir=artifact_path.parent,
+        )
+    )
+    scene.render.filepath = str(temporary_path / "frame_")
+    try:
+        bpy.ops.render.render(animation=True)
+        rendered_frames = sorted(temporary_path.glob("frame_*.png"))
+        expected_count = frame_end - frame_start + 1
+        if len(rendered_frames) != expected_count:
+            raise AdapterError(
+                "RENDER_FAILED",
+                "Blender did not produce the expected frame sequence.",
+                {
+                    "expected_frames": expected_count,
+                    "rendered_frames": len(rendered_frames),
+                },
+            )
+        os.replace(temporary_path, sequence_path)
+    except AdapterError:
+        raise
+    except Exception as exc:
+        raise AdapterError("RENDER_FAILED", "Blender animation render failed.") from exc
+    finally:
+        shutil.rmtree(temporary_path, ignore_errors=True)
+
+    source_hash_after = _file_sha256(scene_path)
+    if source_hash_after != source_hash_before:
+        raise AdapterError("SOURCE_MUTATED", "Source .blend changed during animation rendering.")
+    frame_count = frame_end - frame_start + 1
+    fps = float(scene.render.fps) / float(scene.render.fps_base)
+    frame_paths = sorted(sequence_path.glob("frame_*.png"))
+    frames = [
+        {
+            "frame": frame_start + index,
+            "path": frame_path.relative_to(artifact_path.parent).as_posix(),
+            "size_bytes": frame_path.stat().st_size,
+            "sha256": _file_sha256(frame_path),
+        }
+        for index, frame_path in enumerate(frame_paths)
+    ]
+    sequence_manifest = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "blender_frame_sequence",
+        "scene_path": str(scene_path),
+        "source_sha256": source_hash_after,
+        "frame_start": frame_start,
+        "frame_end": frame_end,
+        "frame_count": frame_count,
+        "fps": fps,
+        "width": width,
+        "height": height,
+        "frames": frames,
+    }
+    _atomic_write_json(artifact_path, sequence_manifest)
+    artifact = {
+        "kind": "frame_sequence",
+        "path": str(artifact_path),
+        "media_type": "application/json",
+        "size_bytes": artifact_path.stat().st_size,
+        "sha256": _file_sha256(artifact_path),
+        "width": width,
+        "height": height,
+        "duration_seconds": frame_count / fps,
+        "frame_count": frame_count,
+    }
+    return (
+        {
+            "scene_path": str(scene_path),
+            "source_sha256": source_hash_after,
+            "frame_start": frame_start,
+            "frame_end": frame_end,
+            "artifact": artifact,
+        },
+        [artifact],
+        [],
+    )
+
+
+def _stable_id_map(values: Any, *, kind: str) -> dict[str, Any]:
+    indexed: dict[str, Any] = {}
+    for value in values:
+        stable_id = value.get("_blender_mcp_id")
+        if not isinstance(stable_id, str) or not stable_id.strip():
+            continue
+        normalized = stable_id.strip()
+        if normalized in indexed:
+            raise AdapterError(
+                "DUPLICATE_STABLE_ID",
+                f"Multiple {kind} values use the same stable ID.",
+                {"stable_id": normalized},
+            )
+        indexed[normalized] = value
+    return indexed
+
+
+def _apply_scene_transaction(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
+    _strict_payload(
+        payload,
+        {
+            "scene_path",
+            "project_root",
+            "output_path",
+            "transaction_id",
+            "expected_source_sha256",
+            "operations",
+        },
+        {
+            "scene_path",
+            "output_path",
+            "transaction_id",
+            "expected_source_sha256",
+            "operations",
+        },
+    )
+    scene_path = _scene_path(payload)
+    _project_root(payload, scene_path)
+    transaction_id = payload.get("transaction_id")
+    if (
+        not isinstance(transaction_id, str)
+        or not transaction_id.startswith("txn_")
+        or not REQUEST_ID_PATTERN.fullmatch(f"req_{transaction_id[4:]}")
+    ):
+        raise AdapterError(
+            "INVALID_TRANSACTION_ID",
+            "transaction_id has an invalid format.",
+        )
+    expected_source_sha256 = payload.get("expected_source_sha256")
+    if (
+        not isinstance(expected_source_sha256, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", expected_source_sha256)
+    ):
+        raise AdapterError(
+            "INVALID_PAYLOAD",
+            "expected_source_sha256 must be a lowercase SHA-256 digest.",
+        )
+    source_sha256 = _file_sha256(scene_path)
+    if source_sha256 != expected_source_sha256:
+        raise AdapterError(
+            "SCENE_REVISION_CONFLICT",
+            "The scene changed after the transaction was prepared.",
+            {
+                "expected_source_sha256": expected_source_sha256,
+                "actual_source_sha256": source_sha256,
+            },
+        )
+    output_raw = payload.get("output_path")
+    if not isinstance(output_raw, str) or not Path(output_raw).is_absolute():
+        raise AdapterError("INVALID_OUTPUT_PATH", "output_path must be absolute.")
+    output_path = Path(output_raw).resolve()
+    if output_path.suffix.lower() != ".blend":
+        raise AdapterError("INVALID_OUTPUT_PATH", "output_path must use a .blend suffix.")
+    if not output_path.parent.is_dir():
+        raise AdapterError("INVALID_OUTPUT_PATH", "output directory does not exist.")
+    if output_path.exists():
+        raise AdapterError("ARTIFACT_EXISTS", "Transaction output already exists.")
+
+    operations = payload.get("operations")
+    _open_scene(scene_path)
+    _enforce_scene_security(payload, scene_path)
+    scene = bpy.context.scene
+    objects_by_id = _stable_id_map(scene.objects, kind="object")
+    actions_by_id = _stable_id_map(bpy.data.actions, kind="action")
+    try:
+        applied = apply_operations(
+            scene,
+            operations,
+            objects_by_id=objects_by_id,
+            actions_by_id=actions_by_id,
+        )
+    except OperationExecutionError as exc:
+        raise AdapterError(
+            exc.code,
+            exc.message,
+            {
+                "operation_index": exc.operation_index,
+                **exc.details,
+            },
+        ) from exc
+
+    try:
+        bpy.ops.wm.save_as_mainfile(
+            filepath=str(output_path),
+            check_existing=False,
+        )
+    except Exception as exc:
+        raise AdapterError(
+            "SCENE_SAVE_FAILED",
+            "Blender could not save the transaction result.",
+        ) from exc
+    if not output_path.is_file():
+        raise AdapterError(
+            "SCENE_SAVE_FAILED",
+            "Blender did not produce the transaction output.",
+        )
+    if _file_sha256(scene_path) != source_sha256:
+        raise AdapterError(
+            "SOURCE_MUTATED",
+            "Source .blend changed during transaction execution.",
+        )
+    artifact = {
+        "kind": "scene",
+        "path": str(output_path),
+        "media_type": "application/x-blender",
+        "size_bytes": output_path.stat().st_size,
+        "sha256": _file_sha256(output_path),
+    }
+    return (
+        {
+            "transaction_id": transaction_id,
+            "scene_path": str(scene_path),
+            "source_sha256": source_sha256,
+            "output_path": str(output_path),
+            "output_sha256": artifact["sha256"],
+            "applied_operations": applied,
+        },
+        [artifact],
+        [],
+    )
+
+
 def _dispatch(
     command: str,
     payload: dict[str, Any],
@@ -403,8 +960,14 @@ def _dispatch(
         return _status(payload)
     if command == "inspect_scene":
         return _inspect(payload)
+    if command == "validate_scene":
+        return _validate_scene(payload)
+    if command == "apply_scene_transaction":
+        return _apply_scene_transaction(payload)
     if command == "render_preview":
         return _render_preview(payload, result_path, request_id)
+    if command == "render_animation":
+        return _render_animation(payload, result_path)
     raise AdapterError("COMMAND_NOT_ALLOWED", "Command is not in the adapter allowlist.")
 
 

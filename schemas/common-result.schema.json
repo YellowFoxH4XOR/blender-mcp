@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://blender-mcp.local/schemas/common-result.schema.json",
-  "title": "Blender MCP M0 result envelope",
+  "title": "Blender MCP adapter result envelope",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -24,7 +24,14 @@
       "pattern": "^req_[A-Za-z0-9_-]{1,120}$"
     },
     "command": {
-      "enum": ["status", "inspect_scene", "render_preview"]
+      "enum": [
+        "status",
+        "inspect_scene",
+        "validate_scene",
+        "apply_scene_transaction",
+        "render_preview",
+        "render_animation"
+      ]
     },
     "ok": {
       "type": "boolean"
@@ -104,13 +111,18 @@
         "path",
         "media_type",
         "size_bytes",
-        "sha256",
-        "width",
-        "height"
+        "sha256"
       ],
       "properties": {
         "kind": {
-          "const": "preview"
+          "enum": [
+            "preview",
+            "scene",
+            "render",
+            "manifest",
+            "checkpoint",
+            "frame_sequence"
+          ]
         },
         "path": {
           "type": "string",
@@ -118,7 +130,8 @@
           "maxLength": 4096
         },
         "media_type": {
-          "const": "image/png"
+          "type": "string",
+          "pattern": "^[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+$"
         },
         "size_bytes": {
           "type": "integer",
@@ -135,6 +148,14 @@
         "height": {
           "type": "integer",
           "minimum": 1
+        },
+        "duration_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "frame_count": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     },

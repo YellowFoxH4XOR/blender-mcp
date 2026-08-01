@@ -9,7 +9,7 @@ from blender_mcp.config import BlenderMCPConfig
 from blender_mcp.server import create_server
 
 
-def test_mcp_surface_exposes_only_the_m0_tools(tmp_path: Path) -> None:
+def test_mcp_surface_preserves_the_m0_tools_and_annotations(tmp_path: Path) -> None:
     executable = tmp_path / "Blender"
     executable.write_bytes(b"placeholder")
     adapter = tmp_path / "blender_adapter" / "bootstrap.py"
@@ -30,11 +30,11 @@ def test_mcp_surface_exposes_only_the_m0_tools(tmp_path: Path) -> None:
 
     tools = asyncio.run(inspect_tools())
 
-    assert set(tools) == {
+    assert {
         "get_blender_status",
         "inspect_scene",
         "render_preview",
-    }
+    }.issubset(tools)
     assert tools["get_blender_status"].annotations.read_only_hint is True
     assert tools["inspect_scene"].annotations.read_only_hint is True
     assert tools["render_preview"].annotations.open_world_hint is False
