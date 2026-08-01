@@ -337,7 +337,11 @@ def test_render_manager_rejects_active_output_conflict(tmp_path: Path) -> None:
     scene = tmp_path / "scene.blend"
     scene.write_bytes(b"scene")
     store = SQLiteJobStore(config.state_db)
-    manager = RenderJobManager(config, store=store)
+    manager = RenderJobManager(
+        config,
+        renderer=FakeRenderer(),
+        store=store,
+    )
     try:
         store.create_job(
             "final_render",
@@ -395,7 +399,11 @@ def test_render_manager_cancel_handles_missing_and_terminal_jobs(
 ) -> None:
     config = _config(tmp_path)
     store = SQLiteJobStore(config.state_db)
-    manager = RenderJobManager(config, store=store)
+    manager = RenderJobManager(
+        config,
+        renderer=FakeRenderer(),
+        store=store,
+    )
     try:
         assert manager.cancel("missing") is None
 
