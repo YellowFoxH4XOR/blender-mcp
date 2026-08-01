@@ -19,7 +19,10 @@ def new_request_id() -> str:
 
 class AdapterOperation(StrEnum):
     INSPECT_SCENE = "inspect_scene"
+    VALIDATE_SCENE = "validate_scene"
+    APPLY_SCENE_TRANSACTION = "apply_scene_transaction"
     RENDER_PREVIEW = "render_preview"
+    RENDER_ANIMATION = "render_animation"
 
 
 class StructuredError(BaseModel):
@@ -45,13 +48,22 @@ class RequestEnvelope(BaseModel, Generic[PayloadT]):
 class ArtifactReference(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["preview"]
+    kind: Literal[
+        "preview",
+        "scene",
+        "render",
+        "manifest",
+        "checkpoint",
+        "frame_sequence",
+    ]
     path: str
-    media_type: Literal["image/png"]
+    media_type: str = Field(pattern=r"^[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+$")
     size_bytes: int = Field(ge=0)
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    width: int = Field(gt=0)
-    height: int = Field(gt=0)
+    width: int | None = Field(default=None, gt=0)
+    height: int | None = Field(default=None, gt=0)
+    duration_seconds: float | None = Field(default=None, ge=0)
+    frame_count: int | None = Field(default=None, ge=0)
 
 
 class AdapterTiming(BaseModel):

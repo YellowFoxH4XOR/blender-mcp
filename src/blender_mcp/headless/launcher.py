@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 from time import monotonic
 from typing import Any
 
@@ -42,6 +44,27 @@ class BlenderLauncher:
             timeout_seconds=timeout_seconds,
         )
 
+    def probe_runtime(self, *, timeout_seconds: float = 15.0) -> ProcessResult:
+        """Initialize Blender fully enough to detect native startup crashes."""
+
+        if not self.config.blender_executable.is_file():
+            raise BlenderMCPError(
+                ErrorCode.BLENDER_NOT_FOUND,
+                "Configured Blender executable was not found",
+                details={"executable": str(self.config.blender_executable)},
+            )
+        return self._run(
+            [
+                str(self.config.blender_executable),
+                "--background",
+                "--disable-autoexec",
+                "--factory-startup",
+                "--python-expr",
+                "import bpy; print('BLENDER_RUNTIME_READY', bpy.app.version_string)",
+            ],
+            timeout_seconds=timeout_seconds,
+        )
+
     def invoke(
         self,
         operation: AdapterOperation,
@@ -49,6 +72,7 @@ class BlenderLauncher:
         *,
         request_id: str,
         timeout_seconds: float | None = None,
+        cancel_event: Event | None = None,
     ) -> ResultEnvelope[dict[str, Any]]:
         if not self.config.blender_executable.is_file():
             raise BlenderMCPError(
@@ -63,10 +87,13 @@ class BlenderLauncher:
                 details={"adapter_script": str(self.config.adapter_script)},
             )
 
+        secured_payload = dict(payload)
+        if "scene_path" in secured_payload:
+            secured_payload["project_root"] = str(self.config.project_root)
         request = RequestEnvelope[dict[str, Any]](
             request_id=request_id,
             command=operation,
-            payload=payload,
+            payload=secured_payload,
         )
         request_bytes = request.model_dump_json().encode("utf-8")
         if len(request_bytes) > self.config.max_request_bytes:
@@ -107,6 +134,7 @@ class BlenderLauncher:
                 command,
                 timeout_seconds=timeout_seconds
                 or self.config.subprocess_timeout_seconds,
+                cancel_event=cancel_event,
             )
             if not result_path.is_file():
                 if process.returncode != 0:
@@ -159,9 +187,22 @@ class BlenderLauncher:
         command: list[str],
         *,
         timeout_seconds: float,
+        cancel_event: Event | None = None,
     ) -> ProcessResult:
         started = monotonic()
+        if cancel_event is not None and cancel_event.is_set():
+            raise BlenderMCPError(
+                ErrorCode.BLENDER_CANCELLED,
+                "Blender operation was cancelled before launch",
+            )
         try:
+            if cancel_event is not None:
+                return self._run_cancellable(
+                    command,
+                    timeout_seconds=timeout_seconds,
+                    cancel_event=cancel_event,
+                    started=started,
+                )
             completed = subprocess.run(
                 command,
                 cwd=self.config.project_root,
@@ -194,6 +235,63 @@ class BlenderLauncher:
             returncode=completed.returncode,
             duration_seconds=monotonic() - started,
         )
+
+    def _run_cancellable(
+        self,
+        command: list[str],
+        *,
+        timeout_seconds: float,
+        cancel_event: Event,
+        started: float,
+    ) -> ProcessResult:
+        process = subprocess.Popen(
+            command,
+            cwd=self.config.project_root,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            shell=False,
+            env=self._environment(),
+            start_new_session=True,
+        )
+        while True:
+            try:
+                stdout, stderr = process.communicate(timeout=0.2)
+                return ProcessResult(
+                    stdout=stdout,
+                    stderr=stderr,
+                    returncode=process.returncode,
+                    duration_seconds=monotonic() - started,
+                )
+            except subprocess.TimeoutExpired:
+                if cancel_event.is_set():
+                    self._terminate_process_group(process)
+                    raise BlenderMCPError(
+                        ErrorCode.BLENDER_CANCELLED,
+                        "Blender operation was cancelled",
+                    )
+                if monotonic() - started > timeout_seconds:
+                    self._terminate_process_group(process)
+                    raise BlenderMCPError(
+                        ErrorCode.BLENDER_TIMEOUT,
+                        "Blender process exceeded its timeout",
+                        details={"timeout_seconds": timeout_seconds},
+                    )
+
+    @staticmethod
+    def _terminate_process_group(process: subprocess.Popen[str]) -> None:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+            process.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            process.wait()
 
     @staticmethod
     def _write_private(path: Path, content: bytes) -> None:

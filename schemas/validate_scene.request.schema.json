@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blender-mcp.local/schemas/validate_scene.request.schema.json",
+  "title": "Blender MCP validate_scene request",
+  "allOf": [
+    {"$ref": "common-request.schema.json"},
+    {
+      "type": "object",
+      "properties": {
+        "command": {"const": "validate_scene"},
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["scene_path"],
+          "properties": {
+            "scene_path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^/.+\\.blend$"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

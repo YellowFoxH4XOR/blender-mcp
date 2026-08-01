@@ -1,6 +1,5 @@
-from blender_mcp.server import main
+from blender_mcp.cli import main
 
 
 if __name__ == "__main__":
-    main()
-
+    raise SystemExit(main())

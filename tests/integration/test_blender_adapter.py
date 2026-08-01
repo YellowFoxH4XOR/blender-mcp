@@ -13,6 +13,9 @@ import pytest
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 BOOTSTRAP = REPOSITORY_ROOT / "blender_adapter" / "bootstrap.py"
 FIXTURE_GENERATOR = REPOSITORY_ROOT / "fixtures" / "generate_fixture.py"
+UNSAFE_FIXTURE_GENERATOR = (
+    REPOSITORY_ROOT / "fixtures" / "generate_unsafe_fixture.py"
+)
 BLENDER_CANDIDATES = (
     Path("/Applications/Blender.app/Contents/MacOS/Blender"),
     Path(shutil.which("blender") or ""),
@@ -52,6 +55,26 @@ def fixture_scene(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return path
 
 
+@pytest.fixture(scope="session")
+def unsafe_fixture_scene(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    root = tmp_path_factory.mktemp("blender-adapter-unsafe")
+    path = root / "project" / "unsafe.blend"
+    external = root / "outside-project"
+    completed = _run_blender(
+        [
+            "--factory-startup",
+            "--python",
+            str(UNSAFE_FIXTURE_GENERATOR),
+            "--",
+            str(path),
+            str(external),
+        ]
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert path.is_file(), completed.stdout + completed.stderr
+    return path
+
+
 def _invoke(tmp_path: Path, request: dict[str, object]) -> tuple[subprocess.CompletedProcess[str], dict]:
     request_path = tmp_path / "request.json"
     result_path = tmp_path / "result.json"
@@ -80,7 +103,14 @@ def test_status_contract(tmp_path: Path) -> None:
     assert result["command"] == "status"
     assert result["ok"] is True
     assert result["data"]["background"] is True
-    assert result["data"]["commands"] == ["inspect_scene", "render_preview", "status"]
+    assert result["data"]["commands"] == [
+        "apply_scene_transaction",
+        "inspect_scene",
+        "render_animation",
+        "render_preview",
+        "status",
+        "validate_scene",
+    ]
     assert result["warnings"] == []
     assert result["artifacts"] == []
     assert result["timing"]["execution_ms"] >= 0
@@ -156,3 +186,132 @@ def test_unknown_payload_field_is_rejected(tmp_path: Path, fixture_scene: Path) 
     assert completed.returncode == 2
     assert result["ok"] is False
     assert result["error"]["code"] == "INVALID_PAYLOAD"
+
+
+def test_validate_scene_returns_revision_and_render_readiness(
+    tmp_path: Path, fixture_scene: Path
+) -> None:
+    completed, result = _invoke(
+        tmp_path,
+        _request("validate_scene", {"scene_path": str(fixture_scene)}),
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert result["ok"] is True
+    assert result["data"]["ready_for_render"] is True
+    assert result["data"]["revision"].startswith("sha256:")
+    assert result["data"]["findings"] == []
+
+
+def test_external_files_and_compositor_outputs_block_rendering(
+    tmp_path: Path,
+    unsafe_fixture_scene: Path,
+) -> None:
+    completed, validation = _invoke(
+        tmp_path,
+        _request(
+            "validate_scene",
+            {"scene_path": str(unsafe_fixture_scene)},
+        ),
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert validation["data"]["ready_for_render"] is False
+    assert {
+        finding["code"] for finding in validation["data"]["findings"]
+    } == {
+        "EXTERNAL_FILE_REFERENCE",
+        "COMPOSITOR_FILE_OUTPUT",
+    }
+
+    completed, render = _invoke(
+        tmp_path,
+        _request(
+            "render_preview",
+            {
+                "scene_path": str(unsafe_fixture_scene),
+                "artifact_path": str(tmp_path / "blocked.png"),
+            },
+        ),
+    )
+    assert completed.returncode == 2
+    assert render["error"]["code"] == "SCENE_SECURITY_BLOCKED"
+    assert not (tmp_path / "blocked.png").exists()
+
+
+def test_render_animation_produces_frame_sequence_without_mutating_source(
+    tmp_path: Path, fixture_scene: Path
+) -> None:
+    before = hashlib.sha256(fixture_scene.read_bytes()).hexdigest()
+    artifact_path = tmp_path / "clip.frames.json"
+
+    completed, result = _invoke(
+        tmp_path,
+        _request(
+            "render_animation",
+            {
+                "scene_path": str(fixture_scene),
+                "artifact_path": str(artifact_path),
+                "frame_start": 1,
+                "frame_end": 2,
+                "max_width": 64,
+                "max_height": 64,
+            },
+        ),
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert result["ok"] is True
+    assert artifact_path.is_file()
+    assert artifact_path.stat().st_size > 0
+    manifest = json.loads(artifact_path.read_text(encoding="utf-8"))
+    assert len(manifest["frames"]) == 2
+    assert all((tmp_path / frame["path"]).is_file() for frame in manifest["frames"])
+    assert result["artifacts"][0]["kind"] == "frame_sequence"
+    assert result["artifacts"][0]["media_type"] == "application/json"
+    assert result["artifacts"][0]["frame_count"] == 2
+    assert hashlib.sha256(fixture_scene.read_bytes()).hexdigest() == before
+
+
+def test_apply_scene_transaction_writes_a_new_scene_atomically(
+    tmp_path: Path, fixture_scene: Path
+) -> None:
+    before = hashlib.sha256(fixture_scene.read_bytes()).hexdigest()
+    output = tmp_path / "transaction-result.blend"
+
+    completed, result = _invoke(
+        tmp_path,
+        _request(
+            "apply_scene_transaction",
+            {
+                "scene_path": str(fixture_scene),
+                "output_path": str(output),
+                "transaction_id": "txn_fixture_move",
+                "expected_source_sha256": before,
+                "operations": [
+                    {
+                        "op": "set_transform",
+                        "object_id": "fixture_cube_v1",
+                        "location": [1.0, 2.0, 3.0],
+                    }
+                ],
+            },
+        ),
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert result["ok"] is True
+    assert output.is_file()
+    assert hashlib.sha256(fixture_scene.read_bytes()).hexdigest() == before
+
+    inspection_dir = tmp_path / "inspection"
+    inspection_dir.mkdir()
+    _, inspection = _invoke(
+        inspection_dir,
+        _request("inspect_scene", {"scene_path": str(output)}),
+    )
+    cube = next(
+        item
+        for item in inspection["data"]["objects"]
+        if item["identity"]["id"] == "fixture_cube_v1"
+    )
+    assert cube["transform"]["location"] == [1.0, 2.0, 3.0]

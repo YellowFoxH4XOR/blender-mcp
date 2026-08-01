@@ -1,6 +1,7 @@
 import json
 import subprocess
 from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -36,6 +37,7 @@ def test_launcher_uses_argument_array_and_validates_result(
         request_path = Path(command[command.index("--request") + 1])
         result_path = Path(command[command.index("--result") + 1])
         request = json.loads(request_path.read_text())
+        observed["request"] = request
         result_path.write_text(
             json.dumps(
                 {
@@ -70,6 +72,9 @@ def test_launcher_uses_argument_array_and_validates_result(
         "--disable-autoexec",
     ]
     assert "--python" in command
+    request = observed["request"]
+    assert isinstance(request, dict)
+    assert request["payload"]["project_root"] == str(config.project_root)
 
 
 def test_launcher_maps_timeout_to_stable_error(
@@ -92,6 +97,58 @@ def test_launcher_maps_timeout_to_stable_error(
         )
 
     assert raised.value.code == ErrorCode.BLENDER_TIMEOUT
+
+
+def test_runtime_probe_initializes_blender_with_safe_factory_defaults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = make_config(tmp_path)
+    observed: dict[str, object] = {}
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        observed["command"] = command
+        observed["shell"] = kwargs["shell"]
+        return subprocess.CompletedProcess(command, 0, "BLENDER_RUNTIME_READY 5.2.0", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = BlenderLauncher(config).probe_runtime(timeout_seconds=10)
+
+    assert result.returncode == 0
+    assert observed["shell"] is False
+    assert observed["command"] == [
+        str(config.blender_executable),
+        "--background",
+        "--disable-autoexec",
+        "--factory-startup",
+        "--python-expr",
+        "import bpy; print('BLENDER_RUNTIME_READY', bpy.app.version_string)",
+    ]
+
+
+def test_launcher_rejects_pre_cancelled_operation_before_spawn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = make_config(tmp_path)
+    cancellation = Event()
+    cancellation.set()
+
+    def unexpected_spawn(*args: object, **kwargs: object) -> object:
+        raise AssertionError("cancelled operation must not spawn Blender")
+
+    monkeypatch.setattr(subprocess, "Popen", unexpected_spawn)
+
+    with pytest.raises(BlenderMCPError) as raised:
+        BlenderLauncher(config).invoke(
+            AdapterOperation.INSPECT_SCENE,
+            {},
+            request_id="req_cancelled",
+            cancel_event=cancellation,
+        )
+
+    assert raised.value.code == ErrorCode.BLENDER_CANCELLED
 
 
 def test_launcher_preserves_structured_adapter_rejection(

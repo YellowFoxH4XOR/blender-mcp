@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://blender-mcp.local/schemas/common-request.schema.json",
-  "title": "Blender MCP M0 request envelope",
+  "title": "Blender MCP adapter request envelope",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "request_id", "command", "payload"],
@@ -16,7 +16,14 @@
       "pattern": "^req_[A-Za-z0-9_-]{1,120}$"
     },
     "command": {
-      "enum": ["status", "inspect_scene", "render_preview"]
+      "enum": [
+        "status",
+        "inspect_scene",
+        "validate_scene",
+        "apply_scene_transaction",
+        "render_preview",
+        "render_animation"
+      ]
     },
     "payload": {
       "type": "object"
